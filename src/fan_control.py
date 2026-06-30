@@ -1,3 +1,4 @@
+import ctypes
 import importlib
 import importlib.util
 import json
@@ -13,7 +14,32 @@ import winreg
 import zipfile
 from tkinter import colorchooser
 
+try:
+    import pystray
+    from PIL import Image
+    _HAS_TRAY = True
+except ImportError:
+    _HAS_TRAY = False
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+_MUTEX_NAME = "Local\\CaseLight-4A2B8C1F"
+_single_instance_mutex = None
+
+def _ensure_single_instance():
+    global _single_instance_mutex
+    kernel32 = ctypes.windll.kernel32
+    _single_instance_mutex = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    if _single_instance_mutex == 0:
+        return True
+    if kernel32.GetLastError() != 183:
+        return True
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, 'CaseLight')
+    if hwnd:
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+    return False
 
 class App:
     BG = '#f5f5f7'
@@ -34,10 +60,11 @@ class App:
         self.root.resizable(False, False)
         self.root.configure(bg=self.BG)
 
-        icon_path = os.path.join(BASE_DIR, 'assets', 'icon.ico')
-        if os.path.exists(icon_path):
+        self.icon_path = os.path.join(BASE_DIR, 'assets', 'icon.ico')
+        if os.path.exists(self.icon_path):
             try:
-                self.root.iconbitmap(icon_path)
+                self.root.iconbitmap(self.icon_path)
+                self.root.iconbitmap(default=self.icon_path)
             except Exception:
                 pass
 
@@ -47,6 +74,11 @@ class App:
         self.light_on = True
         self.config_file = os.path.join(BASE_DIR, 'config.json')
         self.current_color = self._load_color()
+        self.tray_icon = None
+        self.minimize_to_tray_var = tk.BooleanVar(value=self._load_minimize_to_tray())
+
+        if _HAS_TRAY:
+            self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
         self._build_ui()
         self._ensure_dependencies()
@@ -88,6 +120,15 @@ class App:
             selectcolor=self.CARD, activebackground=self.CARD,
             activeforeground=self.TEXT, cursor='hand2', relief=tk.FLAT)
         self.auto_start_cb.pack(pady=(0, 14))
+
+        if _HAS_TRAY:
+            self.minimize_to_tray_cb = tk.Checkbutton(
+                card, text='Minimize to tray on close', variable=self.minimize_to_tray_var,
+                command=self._toggle_minimize_to_tray,
+                font=('Helvetica Neue', 10), bg=self.CARD, fg=self.TEXT,
+                selectcolor=self.CARD, activebackground=self.CARD,
+                activeforeground=self.TEXT, cursor='hand2', relief=tk.FLAT)
+            self.minimize_to_tray_cb.pack(pady=(0, 14))
 
         self.info = tk.Label(self.root, text='', font=('Helvetica Neue', 9),
                              fg=self.SUB, bg=self.BG)
@@ -332,14 +373,86 @@ class App:
 
     def _save_color(self, color):
         try:
+            with open(self.config_file, 'r') as f:
+                data = json.load(f)
+        except:
+            data = {}
+        data['color'] = list(color)
+        try:
             with open(self.config_file, 'w') as f:
-                json.dump({'color': list(color)}, f)
+                json.dump(data, f)
         except:
             pass
+
+    def _load_minimize_to_tray(self):
+        try:
+            with open(self.config_file, 'r') as f:
+                data = json.load(f)
+                return data.get('minimize_to_tray', True)
+        except:
+            return True
+
+    def _toggle_minimize_to_tray(self):
+        try:
+            with open(self.config_file, 'r') as f:
+                data = json.load(f)
+        except:
+            data = {}
+        data['minimize_to_tray'] = self.minimize_to_tray_var.get()
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(data, f)
+        except:
+            pass
+
+    def _on_close(self):
+        if self.minimize_to_tray_var.get():
+            self._minimize_to_tray()
+        else:
+            self.root.destroy()
+
+    def _minimize_to_tray(self):
+        self.root.withdraw()
+        if self.tray_icon is not None:
+            return
+        icon_path = os.path.join(BASE_DIR, 'assets', 'icon.ico')
+        image = None
+        if os.path.exists(icon_path):
+            try:
+                image = Image.open(icon_path)
+            except Exception:
+                pass
+        if image is None:
+            image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        menu = pystray.Menu(
+            pystray.MenuItem('Show', self._show_window, default=True),
+            pystray.MenuItem('Quit', self._quit_app),
+        )
+        self.tray_icon = pystray.Icon('CaseLight', image, 'CaseLight', menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def _show_window(self):
+        self.root.after(0, self._do_show_window)
+
+    def _do_show_window(self):
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
+            self.tray_icon = None
+        self.root.deiconify()
+
+    def _quit_app(self):
+        self.root.after(0, self._do_quit)
+
+    def _do_quit(self):
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
+            self.tray_icon = None
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
 
 
 if __name__ == '__main__':
-    App().run()
+    if _ensure_single_instance():
+        App().run()
