@@ -1,0 +1,13 @@
+# Auto-downloaded OpenRGB
+_openrgb/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# User config (personal color preference)
+config.json
+
+# Windows shortcuts
+*.lnk
